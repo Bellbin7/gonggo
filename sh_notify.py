@@ -6,14 +6,20 @@ from urllib.parse import urljoin
 import requests
 from bs4 import BeautifulSoup
 
+# 게시판별 설정. include: 제목에 이 글자가 하나라도 있어야 알립니다.
 BOARDS = {
-    "주택임대": "https://www.i-sh.co.kr/app/lay2/program/S48T1581C563/www/brd/m_247/list.do",
+    "주택임대": {
+        "url": "https://www.i-sh.co.kr/app/lay2/program/S48T1581C563/www/brd/m_247/list.do",
+        "include": ["모집"],
+    },
+    "주택분양": {
+        "url": "https://www.i-sh.co.kr/app/lay2/program/S48T1581C1617/www/brd/m_244/list.do?multi_itm_seq=1",
+        "include": ["모집", "분양공고", "분양 공고"],
+    },
 }
 
-# 제목에 이 글자가 하나라도 있어야 알립니다.
-INCLUDE = ["모집"]
 # 제목에 이 글자가 있으면 알리지 않습니다.
-EXCLUDE = ["발표", "휴무", "당첨", "결과"]
+EXCLUDE = ["발표", "휴무", "당첨", "결과", "채용"]
 
 SEEN_FILE = "seen_sh.json"
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36"}
@@ -54,8 +60,8 @@ def send_telegram(text):
     r.raise_for_status()
 
 
-def wanted(title):
-    if INCLUDE and not any(k in title for k in INCLUDE):
+def wanted(title, include):
+    if include and not any(k in title for k in include):
         return False
     if any(k in title for k in EXCLUDE):
         return False
@@ -63,26 +69,26 @@ def wanted(title):
 
 
 def main():
-    items = []
-    for name, url in BOARDS.items():
-        items += fetch_board(name, url)
-
-    first_run = not os.path.exists(SEEN_FILE)
     seen = set()
-    if not first_run:
+    if os.path.exists(SEEN_FILE):
         with open(SEEN_FILE, encoding="utf-8") as f:
             seen = set(json.load(f))
 
-    if first_run:
-        send_telegram(f"SH 공고 알림 설정 완료. 기존 글 {len(items)}건은 알리지 않고 기록만 해 두었습니다.")
-    else:
-        new = [i for i in items if i["id"] not in seen]
-        for i in reversed(new):
-            if not wanted(i["title"]):
-                continue
-            send_telegram(f"[SH {i['board']}]\n{i['title']}\n등록일 {i['date']}\n{i['link']}")
+    for name, cfg in BOARDS.items():
+        items = fetch_board(name, cfg["url"])
+        # 이 게시판의 기록이 하나도 없으면 처음 보는 게시판: 알리지 않고 기록만 합니다.
+        board_first = not any(s.startswith(f"{name}:") for s in seen)
 
-    seen.update(i["id"] for i in items)
+        if board_first:
+            send_telegram(f"SH {name} 게시판 알림 설정 완료. 기존 글 {len(items)}건은 알리지 않고 기록만 해 두었습니다.")
+        else:
+            new = [i for i in items if i["id"] not in seen]
+            for i in reversed(new):
+                if wanted(i["title"], cfg["include"]):
+                    send_telegram(f"[SH {name}]\n{i['title']}\n등록일 {i['date']}\n{i['link']}")
+
+        seen.update(i["id"] for i in items)
+
     with open(SEEN_FILE, "w", encoding="utf-8") as f:
         json.dump(sorted(seen), f, ensure_ascii=False)
 
